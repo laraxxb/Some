@@ -97,7 +97,7 @@ def main() -> None:
 
     dispatcher.add_handler(CommandHandler("start", start))
     dispatcher.add_handler(CommandHandler("addserver", add_server))
-    dispatcher.add_handler(MessageHandler(filters.text & ~filters.command, save_server))
+    dispatcher.add_handler(MessageHandler(filters.command, save_server))
     dispatcher.add_handler(CommandHandler("run", run_command))
 
     updater.start_polling()
