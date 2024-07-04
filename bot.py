@@ -59,7 +59,7 @@ def run_command(update: Update, context: CallbackContext) -> None:
 
     try:
         # اتصال بقاعدة البيانات باستخدام URI
-        db_uri = "postgresql://{}:{}@{}:{}/{}".format(DB_USER, DB_PASS, DB_HOST, DB_PORT, DB_NAME)
+        db_uri = os.getenv("DATABASE_URL", None)
         conn = psycopg2.connect(db_uri)
         
         cur = conn.cursor()
@@ -97,7 +97,7 @@ def main() -> None:
 
     dispatcher.add_handler(CommandHandler("start", start))
     dispatcher.add_handler(CommandHandler("addserver", add_server))
-    dispatcher.add_handler(MessageHandler(Filters.text & ~filters.command, save_server))
+    dispatcher.add_handler(MessageHandler(filters.text & ~filters.command, save_server))
     dispatcher.add_handler(CommandHandler("run", run_command))
 
     updater.start_polling()
