@@ -1,6 +1,6 @@
 import logging
 from telegram import Update
-from telegram.ext import Updater, CommandHandler, CallbackContext, MessageHandler, Filters
+from telegram.ext import Updater, CommandHandler, CallbackContext, MessageHandler, filters
 import paramiko
 import psycopg2
 from urllib.parse import urlparse
@@ -97,7 +97,7 @@ def main() -> None:
 
     dispatcher.add_handler(CommandHandler("start", start))
     dispatcher.add_handler(CommandHandler("addserver", add_server))
-    dispatcher.add_handler(MessageHandler(Filters.text & ~Filters.command, save_server))
+    dispatcher.add_handler(MessageHandler(Filters.text & ~filters.command, save_server))
     dispatcher.add_handler(CommandHandler("run", run_command))
 
     updater.start_polling()
