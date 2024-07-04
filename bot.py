@@ -91,7 +91,7 @@ def run_command(update: Update, context: CallbackContext) -> None:
         update.message.reply_text(f'Error: {str(e)}')
 
 def main() -> None:
-    updater = Updater(TELEGRAM_TOKEN)
+    updater = Updater(TELEGRAM_TOKEN, use_context=True)
 
     dispatcher = updater.dispatcher
 
