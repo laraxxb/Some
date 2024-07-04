@@ -1,109 +1,135 @@
-import logging
-from telegram import Update
-from telegram.ext import Updater, CommandHandler, CallbackContext, MessageHandler, filters
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, CallbackContext
 import paramiko
 import psycopg2
-from urllib.parse import urlparse
+from psycopg2 import sql
 import os
-# إعدادات بوت تلغرام
-TELEGRAM_TOKEN = os.getenv("TOKEN", None)
+from threading import Thread
 
-# إعدادات تسجيل
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+DATABASE_URI = os.getenv('DATABASE_URI')
+TOKEN = os.getenv('TOKEN')
 
-def start(update: Update, context: CallbackContext) -> None:
-    update.message.reply_text('شلونك! ابعث /addserver لإضافة سيرفر جديد.')
+def init_db():
+    conn = psycopg2.connect(DATABASE_URI)
+    cursor = conn.cursor()
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS servers (
+        id SERIAL PRIMARY KEY,
+        user_id BIGINT NOT NULL,
+        ip VARCHAR(255) NOT NULL,
+        port INT NOT NULL,
+        username VARCHAR(255) NOT NULL,
+        password VARCHAR(255) NOT NULL
+    );
+    """)
+    conn.commit()
+    cursor.close()
+    conn.close()
 
-def add_server(update: Update, context: CallbackContext) -> None:
-    update.message.reply_text('رجاءً ابعث المعلومات بالشكل التالي:\nhost port username password')
+def start(update: Update, context: CallbackContext):
+    update.message.reply_text("Welcome to the Server Control Bot! Use /addserver to add a new server.")
 
-def save_server(update: Update, context: CallbackContext) -> None:
-    user_id = update.message.from_user.id
-    details = update.message.text.split()
-    if len(details) != 4:
-        update.message.reply_text('رجاءً اكتب المعلومات بالشكل الصحيح: host port username password')
+def add_server(update: Update, context: CallbackContext):
+    update.message.reply_text("Please send server details in the following format:\n<ip> <port> <username> <password>")
+
+def save_server(update: Update, context: CallbackContext):
+    user_data = update.message.text.split()
+    if len(user_data) != 4:
+        update.message.reply_text("Invalid format. Please use the following format:\n<ip> <port> <username> <password>")
         return
     
-    host, port, username, password = details
-
+    ip, port, username, password = user_data
     try:
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        ssh.connect(host, port=int(port), username=username, password=password)
+        ssh.connect(ip, port=int(port), username=username, password=password)
         ssh.close()
     except Exception as e:
-        update.message.reply_text(f'خطأ في الاتصال بالسيرفر: {str(e)}')
+        update.message.reply_text(f"Connection failed: {str(e)}")
         return
 
-    try:
-        # اتصال بقاعدة البيانات باستخدام URI
-        db_uri = os.getenv("DATABASE_URL", None)
-        conn = psycopg2.connect(db_uri)
-        
-        cur = conn.cursor()
-        cur.execute("INSERT INTO servers (user_id, host, port, username, password) VALUES (%s, %s, %s, %s, %s)", 
-                    (user_id, host, port, username, password))
-        conn.commit()
-        cur.close()
-        conn.close()
-        update.message.reply_text('تم إضافة السيرفر بنجاح.')
-    except Exception as e:
-        update.message.reply_text(f'خطأ في قاعدة البيانات: {str(e)}')
+    conn = psycopg2.connect(DATABASE_URI)
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO servers (user_id, ip, port, username, password) VALUES (%s, %s, %s, %s, %s)",
+                   (update.message.from_user.id, ip, port, username, password))
+    conn.commit()
+    cursor.close()
+    conn.close()
 
-def run_command(update: Update, context: CallbackContext) -> None:
+    update.message.reply_text("Server added successfully!")
+
+def server_stats(update: Update, context: CallbackContext):
     user_id = update.message.from_user.id
-    command = ' '.join(context.args)
-    if not command:
-        update.message.reply_text('رجاءً اكتب الأمر اللي تريد تنفيذه.')
+    conn = psycopg2.connect(DATABASE_URI)
+    cursor = conn.cursor()
+    cursor.execute("SELECT ip, port, username, password FROM servers WHERE user_id = %s", (user_id,))
+    servers = cursor.fetchall()
+    cursor.close()
+    conn.close()
+
+    if not servers:
+        update.message.reply_text("No servers found. Please add a server using /addserver.")
         return
 
+    keyboard = []
+    for idx, server in enumerate(servers):
+        keyboard.append([InlineKeyboardButton(f"Server {idx+1}", callback_data=f"stats_{idx}")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    update.message.reply_text("Choose a server to get stats:", reply_markup=reply_markup)
+
+def fetch_stats(server_idx, user_id, query):
+    conn = psycopg2.connect(DATABASE_URI)
+    cursor = conn.cursor()
+    cursor.execute("SELECT ip, port, username, password FROM servers WHERE user_id = %s", (user_id,))
+    servers = cursor.fetchall()
+    cursor.close()
+    conn.close()
+
+    if server_idx < 0 or server_idx >= len(servers):
+        query.edit_message_text("Invalid server selected.")
+        return
+
+    ip, port, username, password = servers[server_idx]
     try:
-        # اتصال بقاعدة البيانات باستخدام URI
-        db_uri = os.getenv("DATABASE_URL", None)
-        conn = psycopg2.connect(db_uri)
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        ssh.connect(ip, port=int(port), username=username, password=password)
         
-        cur = conn.cursor()
-        cur.execute("SELECT host, port, username, password FROM servers WHERE user_id = %s", (user_id,))
-        server = cur.fetchone()
-        cur.close()
-        conn.close()
-
-        if server:
-            host, port, username, password = server
-            ssh = paramiko.SSHClient()
-            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            ssh.connect(host, port=int(port), username=username, password=password)
-            
-            stdin, stdout, stderr = ssh.exec_command(command)
-            output = stdout.read().decode('utf-8')
-            error = stderr.read().decode('utf-8')
-            
-            ssh.close()
-            
-            if output:
-                update.message.reply_text(f'Output:\n{output}')
-            if error:
-                update.message.reply_text(f'Error:\n{error}')
-        else:
-            update.message.reply_text('ماكو سيرفر مضاف لهذا المستخدم.')
-
+        stdin, stdout, stderr = ssh.exec_command("top -b -n1 | head -15")
+        output = stdout.read().decode()
+        
+        query.edit_message_text(f"Server Stats:\n{output}")
+        ssh.close()
     except Exception as e:
-        update.message.reply_text(f'Error: {str(e)}')
+        query.edit_message_text(f"Failed to retrieve stats: {str(e)}")
 
-def main() -> None:
-    updater = Updater(TELEGRAM_TOKEN)
+def button(update: Update, context: CallbackContext):
+    query = update.callback_query
+    query.answer()
+    
+    data = query.data.split('_')
+    if data[0] == 'stats':
+        server_idx = int(data[1])
+        user_id = query.from_user.id
 
-    dispatcher = updater.dispatcher
+        thread = Thread(target=fetch_stats, args=(server_idx, user_id, query))
+        thread.start()
 
-    dispatcher.add_handler(CommandHandler("start", start))
-    dispatcher.add_handler(CommandHandler("addserver", add_server))
-    dispatcher.add_handler(MessageHandler(filters.command, save_server))
-    dispatcher.add_handler(CommandHandler("run", run_command))
+def main():
+    init_db()
+    updater = Updater(TOKEN, use_context=True)
+
+    dp = updater.dispatcher
+
+    dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("addserver", add_server))
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, save_server))
+    dp.add_handler(CommandHandler("stats", server_stats))
+    dp.add_handler(CallbackQueryHandler(button))
 
     updater.start_polling()
-
     updater.idle()
 
 if __name__ == '__main__':
-    
     main()
