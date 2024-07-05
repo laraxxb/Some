@@ -2,7 +2,6 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler, MessageHandler, Filters, CallbackContext
 import paramiko
 import psycopg2
-from psycopg2 import sql
 import os
 from threading import Thread
 
@@ -27,17 +26,70 @@ def init_db():
     conn.close()
 
 def start(update: Update, context: CallbackContext):
-    update.message.reply_text("Welcome to the Server Control Bot! Use /addserver to add a new server.")
+    keyboard = [
+        [InlineKeyboardButton("Add Server", callback_data='add_server')],
+        [InlineKeyboardButton("List Servers", callback_data='list_servers')],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    update.message.reply_text("Welcome to the Server Control Bot! Please choose an option:", reply_markup=reply_markup)
 
-def add_server(update: Update, context: CallbackContext):
-    update.message.reply_text("Please send server details in the following format:\n<ip> <port> <username> <password>")
+def button(update: Update, context: CallbackContext):
+    query = update.callback_query
+    query.answer()
+
+    data = query.data
+    if data == 'add_server':
+        context.user_data['action'] = 'add_server'
+        query.edit_message_text("Please send server details in the following format:\n<ip> <port> <username> <password>")
+    elif data == 'list_servers':
+        list_servers(query, context)
+    elif data.startswith('server_'):
+        server_id = int(data.split('_')[1])
+        control_server(query, context, server_id)
+    elif data.startswith('cmd_'):
+        server_id = int(data.split('_')[1])
+        context.user_data['server_id'] = server_id
+        context.user_data['action'] = 'run_command'
+        query.edit_message_text("Please send the command to run on the server:")
+    elif data.startswith('stats_'):
+        server_id = int(data.split('_')[1])
+        fetch_stats_thread = Thread(target=fetch_stats, args=(server_id, query))
+        fetch_stats_thread.start()
+
+def list_servers(query, context):
+    user_id = query.from_user.id
+    conn = psycopg2.connect(DATABASE_URI)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, ip FROM servers WHERE user_id = %s", (user_id,))
+    servers = cursor.fetchall()
+    cursor.close()
+    conn.close()
+
+    if not servers:
+        query.edit_message_text("No servers found. Please add a server using the 'Add Server' option.")
+        return
+
+    keyboard = []
+    for server in servers:
+        keyboard.append([InlineKeyboardButton(f"{server[1]}", callback_data=f"server_{server[0]}")])
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    query.edit_message_text("Choose a server to control:", reply_markup=reply_markup)
+
+def control_server(query, context, server_id):
+    keyboard = [
+        [InlineKeyboardButton("Run Command", callback_data=f'cmd_{server_id}')],
+        [InlineKeyboardButton("Get Stats", callback_data=f'stats_{server_id}')],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    query.edit_message_text("Choose an action:", reply_markup=reply_markup)
 
 def save_server(update: Update, context: CallbackContext):
     user_data = update.message.text.split()
     if len(user_data) != 4:
         update.message.reply_text("Invalid format. Please use the following format:\n<ip> <port> <username> <password>")
         return
-    
+
     ip, port, username, password = user_data
     try:
         ssh = paramiko.SSHClient()
@@ -58,39 +110,19 @@ def save_server(update: Update, context: CallbackContext):
 
     update.message.reply_text("Server added successfully!")
 
-def server_stats(update: Update, context: CallbackContext):
-    user_id = update.message.from_user.id
+def fetch_stats(server_id, query):
     conn = psycopg2.connect(DATABASE_URI)
     cursor = conn.cursor()
-    cursor.execute("SELECT ip, port, username, password FROM servers WHERE user_id = %s", (user_id,))
-    servers = cursor.fetchall()
+    cursor.execute("SELECT ip, port, username, password FROM servers WHERE id = %s", (server_id,))
+    server = cursor.fetchone()
     cursor.close()
     conn.close()
 
-    if not servers:
-        update.message.reply_text("No servers found. Please add a server using /addserver.")
+    if not server:
+        query.edit_message_text("Server not found.")
         return
 
-    keyboard = []
-    for idx, server in enumerate(servers):
-        keyboard.append([InlineKeyboardButton(f"Server {idx+1}", callback_data=f"stats_{idx}")])
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    update.message.reply_text("Choose a server to get stats:", reply_markup=reply_markup)
-
-def fetch_stats(server_idx, user_id, query):
-    conn = psycopg2.connect(DATABASE_URI)
-    cursor = conn.cursor()
-    cursor.execute("SELECT ip, port, username, password FROM servers WHERE user_id = %s", (user_id,))
-    servers = cursor.fetchall()
-    cursor.close()
-    conn.close()
-
-    if server_idx < 0 or server_idx >= len(servers):
-        query.edit_message_text("Invalid server selected.")
-        return
-
-    ip, port, username, password = servers[server_idx]
+    ip, port, username, password = server
     try:
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -104,17 +136,52 @@ def fetch_stats(server_idx, user_id, query):
     except Exception as e:
         query.edit_message_text(f"Failed to retrieve stats: {str(e)}")
 
-def button(update: Update, context: CallbackContext):
-    query = update.callback_query
-    query.answer()
-    
-    data = query.data.split('_')
-    if data[0] == 'stats':
-        server_idx = int(data[1])
-        user_id = query.from_user.id
+def run_command(update: Update, context: CallbackContext):
+    command = update.message.text
+    server_id = context.user_data.get('server_id')
+    if not server_id or not command:
+        update.message.reply_text("Invalid command or server. Please try again.")
+        return
 
-        thread = Thread(target=fetch_stats, args=(server_idx, user_id, query))
-        thread.start()
+    thread = Thread(target=execute_command, args=(server_id, command, update))
+    thread.start()
+
+def execute_command(server_id, command, update):
+    conn = psycopg2.connect(DATABASE_URI)
+    cursor = conn.cursor()
+    cursor.execute("SELECT ip, port, username, password FROM servers WHERE id = %s", (server_id,))
+    server = cursor.fetchone()
+    cursor.close()
+    conn.close()
+
+    if not server:
+        update.message.reply_text("Server not found.")
+        return
+
+    ip, port, username, password = server
+    try:
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        ssh.connect(ip, port=int(port), username=username, password=password)
+        
+        stdin, stdout, stderr = ssh.exec_command(command)
+        output = stdout.read().decode()
+
+        if stdout.channel.recv_exit_status() == 0:
+            update.message.reply_text(f"Command Output:\n{output}")
+        else:
+            update.message.reply_text(f"Command Error:\n{stderr.read().decode()}")
+        
+        ssh.close()
+    except Exception as e:
+        update.message.reply_text(f"Failed to run command: {str(e)}")
+
+def message_handler(update: Update, context: CallbackContext):
+    action = context.user_data.get('action')
+    if action == 'add_server':
+        save_server(update, context)
+    elif action == 'run_command':
+        run_command(update, context)
 
 def main():
     init_db()
@@ -123,10 +190,8 @@ def main():
     dp = updater.dispatcher
 
     dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("addserver", add_server))
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, save_server))
-    dp.add_handler(CommandHandler("stats", server_stats))
     dp.add_handler(CallbackQueryHandler(button))
+    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, message_handler))
 
     updater.start_polling()
     updater.idle()
