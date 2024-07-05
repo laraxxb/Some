@@ -187,15 +187,33 @@ def connect_and_execute(server_id, command, update, context):
 
 def execute_command(shell, command, update):
     try:
+        # Send the command
         shell.send(command + '\n')
-        output = shell.recv(65535).decode()
+        
+        # Read the initial buffer
+        initial_output = shell.recv(65535).decode()
+        
+        # Wait for the shell prompt
+        while not initial_output.endswith('$ '):  # Adjust this if your shell prompt is different
+            initial_output += shell.recv(65535).decode()
+        
+        # Send a marker to identify the end of the command output
+        shell.send("echo END_OF_COMMAND\n")
+        
+        # Read the buffer until the marker is found
+        command_output = ""
+        while "END_OF_COMMAND" not in command_output:
+            command_output += shell.recv(65535).decode()
+        
+        # Extract the command output
+        command_output = command_output.split("echo END_OF_COMMAND")[0]
 
         keyboard = [
             [InlineKeyboardButton("Stop Command Listening", callback_data='stop_command')],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        update.message.reply_text(f"Command Output:\n{output}", reply_markup=reply_markup)
+        update.message.reply_text(f"Command Output:\n{command_output}", reply_markup=reply_markup)
     except Exception as e:
         update.message.reply_text(f"Failed to run command: {str(e)}")
 
