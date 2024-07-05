@@ -55,6 +55,9 @@ def button(update: Update, context: CallbackContext):
         server_id = int(data.split('_')[1])
         fetch_stats_thread = Thread(target=fetch_stats, args=(server_id, query))
         fetch_stats_thread.start()
+    elif data == 'stop_command':
+        context.user_data['action'] = None
+        query.edit_message_text("Stopped listening for commands.")
 
 def list_servers(query, context):
     user_id = query.from_user.id
@@ -80,6 +83,7 @@ def control_server(query, context, server_id):
     keyboard = [
         [InlineKeyboardButton("Run Command", callback_data=f'cmd_{server_id}')],
         [InlineKeyboardButton("Get Stats", callback_data=f'stats_{server_id}')],
+        [InlineKeyboardButton("Stop Command Listening", callback_data='stop_command')]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     query.edit_message_text("Choose an action:", reply_markup=reply_markup)
@@ -167,10 +171,15 @@ def execute_command(server_id, command, update):
         stdin, stdout, stderr = ssh.exec_command(command)
         output = stdout.read().decode()
 
+        keyboard = [
+            [InlineKeyboardButton("Stop Command Listening", callback_data='stop_command')],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
         if stdout.channel.recv_exit_status() == 0:
-            update.message.reply_text(f"Command Output:\n{output}")
+            update.message.reply_text(f"Command Output:\n{output}", reply_markup=reply_markup)
         else:
-            update.message.reply_text(f"Command Error:\n{stderr.read().decode()}")
+            update.message.reply_text(f"Command Error:\n{stderr.read().decode()}", reply_markup=reply_markup)
         
         ssh.close()
     except Exception as e:
