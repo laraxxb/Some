@@ -4,6 +4,7 @@ import paramiko
 import psycopg2
 import os
 from threading import Thread
+import re
 
 DATABASE_URI = os.getenv('DATABASE_URI')
 TOKEN = os.getenv('TOKEN')
@@ -185,6 +186,8 @@ def connect_and_execute(server_id, command, update, context):
     except Exception as e:
         update.message.reply_text(f"Failed to run command: {str(e)}")
 
+
+
 def execute_command(shell, command, update):
     try:
         # Send the command
@@ -194,7 +197,7 @@ def execute_command(shell, command, update):
         initial_output = shell.recv(65535).decode()
         
         # Wait for the shell prompt
-        while not initial_output.endswith('$ '):  # Adjust this if your shell prompt is different
+        while not re.search(r'\$ $', initial_output):  # Adjust this if your shell prompt is different
             initial_output += shell.recv(65535).decode()
         
         # Send a marker to identify the end of the command output
@@ -205,15 +208,17 @@ def execute_command(shell, command, update):
         while "END_OF_COMMAND" not in command_output:
             command_output += shell.recv(65535).decode()
         
-        # Extract the command output
+        # Extract the command output and clean it
         command_output = command_output.split("echo END_OF_COMMAND")[0]
-
+        command_output = re.sub(r'\x1b\[[0-9;]*m', '', command_output)  # Remove ANSI escape sequences
+        command_output = re.sub(r'nsher@ssh1:~.*\$ ', '', command_output)  # Remove shell prompts
+        
         keyboard = [
             [InlineKeyboardButton("Stop Command Listening", callback_data='stop_command')],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        update.message.reply_text(f"Command Output:\n{command_output}", reply_markup=reply_markup)
+        update.message.reply_text(f"Command Output:\n{command_output.strip()}", reply_markup=reply_markup)
     except Exception as e:
         update.message.reply_text(f"Failed to run command: {str(e)}")
 
