@@ -59,6 +59,9 @@ def button(update: Update, context: CallbackContext):
         if 'ssh_client' in context.user_data:
             context.user_data['ssh_client'].close()
             del context.user_data['ssh_client']
+        if 'shell' in context.user_data:
+            context.user_data['shell'].close()
+            del context.user_data['shell']
         context.user_data['action'] = None
         query.edit_message_text("Stopped listening for commands.")
 
@@ -154,7 +157,7 @@ def run_command(update: Update, context: CallbackContext):
         thread = Thread(target=connect_and_execute, args=(server_id, command, update, context))
         thread.start()
     else:
-        thread = Thread(target=execute_command, args=(context.user_data['ssh_client'], command, update))
+        thread = Thread(target=execute_command, args=(context.user_data['shell'], command, update))
         thread.start()
 
 def connect_and_execute(server_id, command, update, context):
@@ -175,24 +178,24 @@ def connect_and_execute(server_id, command, update, context):
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         ssh.connect(ip, port=int(port), username=username, password=password)
         context.user_data['ssh_client'] = ssh
-        execute_command(ssh, command, update)
+
+        shell = ssh.invoke_shell()
+        context.user_data['shell'] = shell
+        execute_command(shell, command, update)
     except Exception as e:
         update.message.reply_text(f"Failed to run command: {str(e)}")
 
-def execute_command(ssh, command, update):
+def execute_command(shell, command, update):
     try:
-        stdin, stdout, stderr = ssh.exec_command(command)
-        output = stdout.read().decode()
+        shell.send(command + '\n')
+        output = shell.recv(65535).decode()
 
         keyboard = [
             [InlineKeyboardButton("Stop Command Listening", callback_data='stop_command')],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        if stdout.channel.recv_exit_status() == 0:
-            update.message.reply_text(f"Command Output:\n{output}", reply_markup=reply_markup)
-        else:
-            update.message.reply_text(f"Command Error:\n{stderr.read().decode()}", reply_markup=reply_markup)
+        update.message.reply_text(f"Command Output:\n{output}", reply_markup=reply_markup)
     except Exception as e:
         update.message.reply_text(f"Failed to run command: {str(e)}")
 
