@@ -56,6 +56,9 @@ def button(update: Update, context: CallbackContext):
         fetch_stats_thread = Thread(target=fetch_stats, args=(server_id, query))
         fetch_stats_thread.start()
     elif data == 'stop_command':
+        if 'ssh_client' in context.user_data:
+            context.user_data['ssh_client'].close()
+            del context.user_data['ssh_client']
         context.user_data['action'] = None
         query.edit_message_text("Stopped listening for commands.")
 
@@ -147,10 +150,14 @@ def run_command(update: Update, context: CallbackContext):
         update.message.reply_text("Invalid command or server. Please try again.")
         return
 
-    thread = Thread(target=execute_command, args=(server_id, command, update))
-    thread.start()
+    if 'ssh_client' not in context.user_data:
+        thread = Thread(target=connect_and_execute, args=(server_id, command, update, context))
+        thread.start()
+    else:
+        thread = Thread(target=execute_command, args=(context.user_data['ssh_client'], command, update))
+        thread.start()
 
-def execute_command(server_id, command, update):
+def connect_and_execute(server_id, command, update, context):
     conn = psycopg2.connect(DATABASE_URI)
     cursor = conn.cursor()
     cursor.execute("SELECT ip, port, username, password FROM servers WHERE id = %s", (server_id,))
@@ -167,7 +174,13 @@ def execute_command(server_id, command, update):
         ssh = paramiko.SSHClient()
         ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         ssh.connect(ip, port=int(port), username=username, password=password)
-        
+        context.user_data['ssh_client'] = ssh
+        execute_command(ssh, command, update)
+    except Exception as e:
+        update.message.reply_text(f"Failed to run command: {str(e)}")
+
+def execute_command(ssh, command, update):
+    try:
         stdin, stdout, stderr = ssh.exec_command(command)
         output = stdout.read().decode()
 
@@ -180,8 +193,6 @@ def execute_command(server_id, command, update):
             update.message.reply_text(f"Command Output:\n{output}", reply_markup=reply_markup)
         else:
             update.message.reply_text(f"Command Error:\n{stderr.read().decode()}", reply_markup=reply_markup)
-        
-        ssh.close()
     except Exception as e:
         update.message.reply_text(f"Failed to run command: {str(e)}")
 
